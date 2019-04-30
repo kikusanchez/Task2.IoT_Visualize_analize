@@ -5,8 +5,8 @@ if(require("pacman")=="FALSE"){
 }
 
 
-pacman::p_load(rstudioapi,dplyr,tidyr,ggplot2,plotly,caret,rpart,gdata,chron,lubridate,padr)
-
+pacman::p_load(rstudioapi,dplyr,tidyr,ggplot2,plotly,caret,rpart,gdata,chron,lubridate,padr,TTR,forecast)
+library(lubridate)
 
 #Setting my Plotly API
 #Sys.setenv("plotly_username"="kikusanchez")
@@ -29,6 +29,120 @@ load("../Task1.IoT_Exploratory_data_analysis/datasets/entire_ok.Rda")
 
 
 #### 01. PRE-PROCESS --------------------------------------------------------------------------------
+
+# Filling NA's
+# Searching for NA's -> 116844
+sum(is.na(entire_ok))
+
+# Replace NA's with the mean of the variable
+# Charging zoo library to obtain na.aggregate function
+library(zoo) 
+# Replacing NA's with the mean and creating the concerning dataset
+NA_mean <- replace(test, TRUE, lapply(test, na.aggregate))
+# Searching for NA's -> 0
+sum(is.na(NA_mean))
+
+
+
+# Granularity -> month (for each year) & total power
+monthly_power <- NA_mean %>% 
+  group_by(year, month) %>%
+  summarise(month_total = sum(Global_active_power))
+
+# Granularity -> month (for each year) & total power
+daily_power <- NA_mean %>% 
+  group_by(year, month, day) %>%
+  summarise(day_total = sum(Global_active_power))
+
+
+
+# Creating time series
+ts_monthly <- ts(monthly_power$month_total, frequency = 12, start=c(2007,1))
+
+ts_daily <- ts(daily_power$day_total, frequency = 365, start=c(2007,1))
+
+
+
+# Plotting my ts
+autoplot(ts_monthly)
+
+
+# Decomposing
+#dec_ts_monthly<-decompose(ts_monthly)
+dec_ts_monthly<-stl(ts_monthly, s.window = "periodic")
+
+dec_ts_daily <- stl(ts_daily, s.window = "periodic")
+
+
+# variance for each variable
+apply(dec_ts_monthly$time.series, 2, var)/var(ts_monthly)
+apply(dec_ts_daily$time.series, 2, var)/var(ts_daily)
+
+#train and test sets
+train_monthly_total <- window(ts_monthly, start=c(2007, 1), end=c(2008,12))
+test_monthly_total <- window(ts_monthly, start=c(2009, 1))
+  
+# Creating the model
+HW_monthly_total <- HoltWinters(train_monthly_total)
+
+# Creating Holt Winters forecast
+FC_monthly_total<-forecast:::forecast.HoltWinters(HW_monthly_total, h=12)
+
+# Checking for residuals of my model
+checkresiduals(HW_monthly_total)
+
+# Plotting my forecast comparing with my total time observed
+autoplot(ts_monthly)+
+  autolayer(FC_monthly_total$mean)
+
+# Checking for the accuracy of my forecast concerning all time observed
+HW_accuracy <- accuracy(FC_monthly_total, test_monthly_total)
+
+
+
+# Plotting decompose
+autoplot(dec_ts_monthly)
+
+# If the remainder mean is close to 0 is a good forecast
+mean(dec_ts_monthly$time.series[,"remainder"])
+
+
+
+
+
+
+
+
+
+
+
+# Apply time series linear regression to my ts object
+fitSM3 <- tslm(Stalin ~ trend + season)
+
+# obtain R2 and RMSE from the model you built
+summary(fitSM3)
+
+# Create the forecast ahead 3 time periods 
+forecastfitSM3 <- forecast(fitSM3, h=12)
+
+# Plotting the forecast
+plot(forecastfitSM3)
+autoplot(forecastfitSM3)
+
+
+## Remove seasonal components
+
+
+
+tsSM3_070809Adjusted <- tsSM3_070809weekly - components070809SM3weekly$seasonal
+autoplot(tsSM3_070809Adjusted)
+
+
+
+
+
+# PLAN OF ATTACK: #
+
 ## Plot all of sub-meter 1
 plot(yourData$Sub_metering_1)
 
@@ -113,6 +227,11 @@ summer_08 <- filter(entire_ok, (year == 2008 & month == 6 & minute == 0) |
                       (year == 2008 & month == 7 & minute == 0) | 
                       (year == 2008 & month == 8 & minute == 0) |
                       (year == 2008 & month == 9 & minute == 0))
+
+
+
+
+
 
 
 

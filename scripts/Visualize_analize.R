@@ -5,8 +5,10 @@ if(require("pacman")=="FALSE"){
 }
 
 
-pacman::p_load(rstudioapi,dplyr,tidyr,ggplot2,plotly,caret,rpart,gdata,chron,lubridate,padr,TTR,forecast)
-library(lubridate)
+pacman::p_load(rstudioapi,dplyr,tidyr,ggplot2,plotly,caret,rpart,
+               gdata,chron,lubridate,padr,TTR,forecast,opera,fable,GeomComb)
+
+
 
 #Setting my Plotly API
 #Sys.setenv("plotly_username"="kikusanchez")
@@ -35,10 +37,10 @@ load("../Task1.IoT_Exploratory_data_analysis/datasets/entire_ok.Rda")
 sum(is.na(entire_ok))
 
 # Replace NA's with the mean of the variable
-# Charging zoo library to obtain na.aggregate function
+# Charging zoo library to get na.aggregate function
 library(zoo) 
 # Replacing NA's with the mean and creating the concerning dataset
-NA_mean <- replace(test, TRUE, lapply(test, na.aggregate))
+NA_mean <- replace(entire_ok, TRUE, lapply(entire_ok, na.aggregate))
 # Searching for NA's -> 0
 sum(is.na(NA_mean))
 
@@ -62,7 +64,6 @@ ts_monthly <- ts(monthly_power$month_total, frequency = 12, start=c(2007,1))
 ts_daily <- ts(daily_power$day_total, frequency = 365, start=c(2007,1))
 
 
-
 # Plotting my ts
 autoplot(ts_monthly)
 
@@ -73,45 +74,125 @@ dec_ts_monthly<-stl(ts_monthly, s.window = "periodic")
 
 dec_ts_daily <- stl(ts_daily, s.window = "periodic")
 
+autoplot(dec_ts_monthly)
+autoplot(dec_ts_daily)
 
 # variance for each variable
 apply(dec_ts_monthly$time.series, 2, var)/var(ts_monthly)
+
 apply(dec_ts_daily$time.series, 2, var)/var(ts_daily)
 
-#train and test sets
-train_monthly_total <- window(ts_monthly, start=c(2007, 1), end=c(2008,12))
-test_monthly_total <- window(ts_monthly, start=c(2009, 1))
+#train and test sets for monthly forecast
+train_monthly_total <- window(ts_monthly, start=c(2007, 1), end=c(2009,12))
+test_monthly_total <- window(ts_monthly, start=c(2010, 1))
   
-# Creating the model
+# Creating models
 HW_monthly_total <- HoltWinters(train_monthly_total)
 
-# Creating Holt Winters forecast
-FC_monthly_total<-forecast:::forecast.HoltWinters(HW_monthly_total, h=12)
+Arima_monthly_total <- auto.arima(train_monthly_total)
 
-# Checking for residuals of my model
-checkresiduals(HW_monthly_total)
+ets_monthly_total <- ets(train_monthly_total)
+
+tslm_monthly_total <- tslm(train_monthly_total ~ trend + season)
+
+# Creating a vector with the same length of the h parameter
+h <- length(test_monthly_total)
+
+# Creating forecasts
+FC_hw_monthly_total<-forecast:::forecast.HoltWinters(HW_monthly_total, h)
+
+FC_arima_monthly <- forecast:::forecast.Arima(Arima_monthly_total, h)
+
+FC_ets_monthly <- forecast:::forecast.ets(ets_monthly_total, h)
+
+FC_tslm_monthly <- forecast(tslm_monthly_total, h=h)
+
+
+# Checking for residuals of my models
+checkresiduals(FC_hw_monthly_total)
+
+checkresiduals(FC_arima_monthly)
 
 # Plotting my forecast comparing with my total time observed
-autoplot(ts_monthly)+
-  autolayer(FC_monthly_total$mean)
+autoplot(train_monthly_total)+
+  autolayer(FC_hw_monthly_total$mean)+
+  autolayer(FC_arima_monthly$mean) +
+  autolayer(FC_ets_monthly$mean) + 
+  autolayer(FC_tslm_monthly$mean)
 
-# Checking for the accuracy of my forecast concerning all time observed
-HW_accuracy <- accuracy(FC_monthly_total, test_monthly_total)
 
+# Checking the accuracy of the models on my test dataset
+accuracy_hw_monthly <- accuracy(FC_hw_monthly_total, test_monthly_total)
 
-
-# Plotting decompose
-autoplot(dec_ts_monthly)
-
-# If the remainder mean is close to 0 is a good forecast
-mean(dec_ts_monthly$time.series[,"remainder"])
+accuracy_arima_monthly <- accuracy(FC_arima_monthly, test_monthly_total)
 
 
 
 
+# MIXTURE FORECAST #
+
+# Creating a vector with the results of all my forecasts
+FC_results <- cbind(FC_hw_monthly_total$mean, FC_arima_monthly$mean, FC_ets_monthly$mean, FC_tslm_monthly$mean)
+
+# Creating a data frame of my test with the results of all my forecasts
+results_df <- cbind(test_monthly_total, FC_results)
+
+# Assigning names to the columns
+colnames(results_df) <- c("Real data - test size","HW","ARIMA","ETS","TSLM")
+
+# Plotting all forecasts
+autoplot(results_df) +
+  xlab("Year") + ylab(expression("Total power consumption"[2])) +
+  scale_color_manual(labels = c("Real data - test size","HW","ARIMA","ETS","TSLM"),
+                     values=c("black", "red", "yellow", "blue", "green")) +
+  aes(linetype = series,
+      size = series) +
+  scale_linetype_manual(labels = c("Real data - test size","HW","ARIMA","ETS","TSLM"),
+                        values = c(1, 2, 2, 2, 2)) +
+  scale_size_manual(labels = c("Real data - test size","HW","ARIMA","ETS","TSLM"),
+                    values = c(3, 2, 2, 2, 2))
+
+
+# The mixture function from the opera package computes weights
+#when combining the forecasts based on how well it has done up to that point.
+
+#creating mixture model based on MLpol model
+MLpol0 <- mixture(model = "MLpol", loss.type = "square")
+
+# assigning weigths to your model on the testing size
+weights <- predict(MLpol0, FC_results, test_monthly_total, type='weights')
+
+head(weights)
+tail(weights)
+
+# Creating mixture forecast
+FC_mixture_monthly <- ts(predict(MLpol0, FC_results, test_monthly_total, type='response'), start=c(2010,1), freq=12)
+
+# Saving results of mixture forecast and holtwinters (best models) in a dataframe and renaming their columns
+bestmodels_df <- cbind(test_monthly_total, FC_mixture_monthly, FC_hw_monthly_total$mean)
+colnames(bestmodels_df) <- c("Real data - test size","Mixture forecast", "Holtwinters forecast")
+
+
+# Plotting the dataframe with mixture forecast and holtwinters results
+autoplot(bestmodels_df) +
+  xlab("Year") + ylab(expression("Total power consumption"[2])) +
+  scale_color_manual(labels = c("Real data - test size","Mixture forecast", "Holtwinters forecast"),
+                     values=c("black", "blue", "red")) +
+  aes(linetype = series, size = series) +
+  scale_linetype_manual(labels = c("Real data - test size","Mixture forecast", "Holtwinters forecast"),
+                        values = c(1, 1, 1)) +
+  scale_size_manual(labels = c("Real data - test size","Mixture forecast", "Holtwinters forecast"),
+                    values = c(3, 2, 2))
+
+
+# FORECAST HYBRID #
+install.packages("forecastHybrid", "thief")
+
+library(forecastHybrid)
 
 
 
+  
 
 
 
